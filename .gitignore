@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+
+# Training outputs
+runs/
+
+# Datasets (add your own data locally)
+data/
+
+# Exported model artifacts
+*.onnx
+*.hef
+
+# OS / editor
+.DS_Store
+*.swp

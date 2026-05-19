@@ -1,0 +1,22 @@
+# YOLOv8 training config for LNPR (License Plate Number Recognition)
+# Pass this file with: --cfg configs/yolov8-lnpr.yaml
+
+# Recommended settings for license plate detection on Raspberry Pi 5 + Hailo-8L
+# epochs: 100
+# imgsz: 640
+# batch: 16
+# device: 0        # GPU index, or 'cpu'
+
+# Augmentation — keep moderate augmentation for license plates
+# hsv_h: 0.015     # hue augmentation
+# hsv_s: 0.7       # saturation augmentation
+# hsv_v: 0.4       # value augmentation
+# degrees: 5.0     # small rotations only (plates don't rotate much)
+# translate: 0.1
+# scale: 0.5
+# shear: 0.0
+# perspective: 0.0
+# flipud: 0.0      # don't flip vertically — plates have orientation
+# fliplr: 0.5      # horizontal flip is fine
+# mosaic: 1.0
+# mixup: 0.0
