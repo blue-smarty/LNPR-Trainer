@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import subprocess
+import json
 
 import streamlit as st
 
@@ -65,6 +67,10 @@ def show_exception(exc: Exception) -> None:
         st.code(traceback.format_exc(), language="text")
 
 
+def run_subprocess(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -73,7 +79,7 @@ st.set_page_config(page_title="LNPR Trainer Dashboard", layout="wide")
 st.title("LNPR Trainer Dashboard")
 st.caption(
     "Train and export License Plate Number Recognition (LNPR) models — "
-    "dataset setup, YOLOv8 training, ONNX export, and Hailo HEF conversion in one place."
+    "dataset setup, YOLOv8 training, ONNX export, Hailo HEF conversion, and plate recognition in one place."
 )
 
 # ---------------------------------------------------------------------------
@@ -103,8 +109,8 @@ with st.sidebar:
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab_setup, tab_train, tab_export, tab_hef, tab_artifacts = st.tabs(
-    ["Setup Dataset", "Train Model", "Export ONNX", "Convert to HEF", "Artifacts"]
+tab_setup, tab_train, tab_export, tab_hef, tab_artifacts, tab_recognition = st.tabs(
+    ["Setup Dataset", "Train Model", "Export ONNX", "Convert to HEF", "Artifacts", "Recognition"]
 )
 
 # ── Setup Dataset ────────────────────────────────────────────────────────────
@@ -496,7 +502,7 @@ with tab_hef:
                 except Exception as exc:  # pragma: no cover - UI feedback path
                     show_exception(exc)
 
-# ── Artifacts ─────────────────────────────────────────────────────────────────
+# ── Artifacts ────────────────────────────────────────────────────────────────
 
 with tab_artifacts:
     st.subheader("Artifacts Browser")
@@ -567,3 +573,214 @@ with tab_artifacts:
             )
     else:
         st.info("No .hef files found in the repository yet.")
+
+# ── Recognition ──────────────────────────────────────────────────────────────
+
+with tab_recognition:
+    st.subheader("Plate text recognition")
+    st.markdown(
+        "Train, export, and run inference for the CRNN-based plate recognizer. "
+        "Use cropped plate images with `train/images`, `val/images`, and `labels.txt` files."
+    )
+
+    rec_action = st.radio(
+        "Recognition action",
+        ["Train recognizer", "Export recognizer ONNX", "Run end-to-end inference"],
+        horizontal=True,
+    )
+
+    if rec_action == "Train recognizer":
+        rec_data = st.text_input("Recognition dataset root", value="data/recognition")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            rec_epochs = st.number_input("Epochs", min_value=1, value=30, key="rec_epochs")
+        with col2:
+            rec_batch = st.number_input("Batch size", min_value=1, value=32, key="rec_batch")
+        with col3:
+            rec_lr = st.number_input("Learning rate", min_value=0.000001, value=0.001, format="%.6f", key="rec_lr")
+
+        col4, col5, col6 = st.columns(3)
+        with col4:
+            rec_h = st.number_input("Image height", min_value=16, value=32, key="rec_h")
+        with col5:
+            rec_w = st.number_input("Image width", min_value=32, value=160, key="rec_w")
+        with col6:
+            rec_workers = st.number_input("Workers", min_value=0, value=4, key="rec_workers")
+
+        rec_charset = st.text_input("Charset", value="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        rec_hidden = st.number_input("RNN hidden size", min_value=32, value=256, step=32)
+        rec_project = st.text_input("Project directory", value="runs/recognition", key="rec_project")
+        rec_name = st.text_input("Run name", value="crnn_lp", key="rec_name")
+        rec_device = st.text_input("Device", value="", key="rec_device")
+
+        if st.button("Run recognizer training", type="primary"):
+            try:
+                cmd = [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "train_recognizer.py"),
+                    "--data",
+                    rec_data,
+                    "--epochs",
+                    str(int(rec_epochs)),
+                    "--batch",
+                    str(int(rec_batch)),
+                    "--img-height",
+                    str(int(rec_h)),
+                    "--img-width",
+                    str(int(rec_w)),
+                    "--lr",
+                    str(float(rec_lr)),
+                    "--workers",
+                    str(int(rec_workers)),
+                    "--charset",
+                    rec_charset,
+                    "--rnn-hidden-size",
+                    str(int(rec_hidden)),
+                    "--project",
+                    rec_project,
+                    "--name",
+                    rec_name,
+                ]
+                if rec_device.strip():
+                    cmd += ["--device", rec_device.strip()]
+
+                proc = run_subprocess(cmd)
+                st.success("Recognizer training completed successfully.")
+                if proc.stdout.strip():
+                    st.code(proc.stdout, language="text")
+                if proc.stderr.strip():
+                    st.code(proc.stderr, language="text")
+            except subprocess.CalledProcessError as exc:
+                if exc.stdout:
+                    st.code(exc.stdout, language="text")
+                if exc.stderr:
+                    st.code(exc.stderr, language="text")
+                show_exception(exc)
+            except Exception as exc:
+                show_exception(exc)
+
+    elif rec_action == "Export recognizer ONNX":
+        rec_weights = st.text_input(
+            "Recognizer checkpoint",
+            value="runs/recognition/crnn_lp/weights/best.pt",
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            rec_exp_h = st.number_input("Image height", min_value=16, value=32, key="rec_exp_h")
+        with col2:
+            rec_exp_w = st.number_input("Image width", min_value=32, value=160, key="rec_exp_w")
+        rec_output = st.text_input("Output ONNX path (optional)", value="")
+        rec_opset = st.number_input("ONNX opset", min_value=9, value=12, key="rec_opset")
+        rec_dynamic = st.checkbox("Dynamic width", key="rec_dynamic")
+        rec_export_device = st.text_input("Device", value="cpu", key="rec_export_device")
+
+        if st.button("Export recognizer ONNX", type="primary"):
+            try:
+                cmd = [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "export_recognizer_onnx.py"),
+                    "--weights",
+                    rec_weights,
+                    "--img-height",
+                    str(int(rec_exp_h)),
+                    "--img-width",
+                    str(int(rec_exp_w)),
+                    "--opset",
+                    str(int(rec_opset)),
+                    "--device",
+                    rec_export_device,
+                ]
+                if rec_output.strip():
+                    cmd += ["--output", rec_output.strip()]
+                if rec_dynamic:
+                    cmd.append("--dynamic-width")
+
+                proc = run_subprocess(cmd)
+                st.success("Recognizer ONNX export completed successfully.")
+                if proc.stdout.strip():
+                    st.code(proc.stdout, language="text")
+                if proc.stderr.strip():
+                    st.code(proc.stderr, language="text")
+            except subprocess.CalledProcessError as exc:
+                if exc.stdout:
+                    st.code(exc.stdout, language="text")
+                if exc.stderr:
+                    st.code(exc.stderr, language="text")
+                show_exception(exc)
+            except Exception as exc:
+                show_exception(exc)
+
+    else:
+        infer_image = st.text_input("Image path", value="")
+        infer_detector = st.text_input("Detector weights", value="runs/detect/lnpr/weights/best.pt")
+        infer_recognizer = st.text_input("Recognizer checkpoint", value="runs/recognition/crnn_lp/weights/best.pt")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            infer_imgsz = st.number_input("Detector image size", min_value=32, value=640, step=32)
+        with col2:
+            infer_conf = st.number_input("Confidence threshold", min_value=0.0, max_value=1.0, value=0.25)
+        with col3:
+            infer_iou = st.number_input("IoU threshold", min_value=0.0, max_value=1.0, value=0.45)
+
+        col4, col5, col6 = st.columns(3)
+        with col4:
+            infer_max_det = st.number_input("Max detections", min_value=1, value=10)
+        with col5:
+            infer_rec_h = st.number_input("Recognizer height", min_value=16, value=32)
+        with col6:
+            infer_rec_w = st.number_input("Recognizer width", min_value=32, value=160)
+
+        infer_device = st.text_input("Device", value="")
+        infer_save_crops = st.checkbox("Save crops")
+        infer_output_json = st.text_input("Output JSON path (optional)", value="")
+
+        if st.button("Run end-to-end inference", type="primary"):
+            try:
+                cmd = [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "infer_plate_text.py"),
+                    "--image",
+                    infer_image,
+                    "--detector",
+                    infer_detector,
+                    "--recognizer",
+                    infer_recognizer,
+                    "--imgsz",
+                    str(int(infer_imgsz)),
+                    "--conf",
+                    str(float(infer_conf)),
+                    "--iou",
+                    str(float(infer_iou)),
+                    "--max-det",
+                    str(int(infer_max_det)),
+                    "--rec-img-height",
+                    str(int(infer_rec_h)),
+                    "--rec-img-width",
+                    str(int(infer_rec_w)),
+                ]
+                if infer_device.strip():
+                    cmd += ["--device", infer_device.strip()]
+                if infer_save_crops:
+                    cmd.append("--save-crops")
+                if infer_output_json.strip():
+                    cmd += ["--output-json", infer_output_json.strip()]
+
+                proc = run_subprocess(cmd)
+                st.success("Inference completed successfully.")
+                if proc.stdout.strip():
+                    try:
+                        parsed = json.loads(proc.stdout)
+                        st.json(parsed)
+                    except Exception:
+                        st.code(proc.stdout, language="json")
+                if proc.stderr.strip():
+                    st.code(proc.stderr, language="text")
+            except subprocess.CalledProcessError as exc:
+                if exc.stdout:
+                    st.code(exc.stdout, language="text")
+                if exc.stderr:
+                    st.code(exc.stderr, language="text")
+                show_exception(exc)
+            except Exception as exc:
+                show_exception(exc)
