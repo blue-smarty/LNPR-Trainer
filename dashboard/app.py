@@ -279,12 +279,13 @@ with tab_train:
                     model.add_callback("on_train_start", on_train_start)
                     model.add_callback("on_train_epoch_end", on_train_epoch_end)
 
+                    project_path = str(REPO_ROOT / project)
                     train_kwargs = {
                         "data": str(data_path),
                         "epochs": int(epochs),
                         "imgsz": int(imgsz),
                         "batch": int(batch),
-                        "project": project,
+                        "project": project_path,
                         "name": run_name,
                         "resume": resume,
                     }
