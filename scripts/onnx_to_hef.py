@@ -100,6 +100,49 @@ def _extract_expected_input_shape(error_text: str) -> tuple[int, ...] | None:
         return None
 
 
+def _extract_dynamic_input_hint(error_text: str) -> tuple[str, tuple[int, ...]] | None:
+    """Extract input node name and hinted shape from dynamic-shape parser errors."""
+    if "Unsupported dynamic shape found on input node" not in error_text:
+        return None
+
+    node_match = re.search(
+        r"Unsupported dynamic shape found on input node\s+([^,\s]+)",
+        error_text,
+    )
+    if not node_match:
+        return None
+
+    shape_matches = re.findall(r"\[\s*-?\d+(?:\s*,\s*-?\d+){1,}\s*\]", error_text)
+    if not shape_matches:
+        return None
+
+    try:
+        hinted_shape = tuple(int(part.strip()) for part in shape_matches[-1].strip("[]").split(","))
+    except ValueError:
+        return None
+
+    return node_match.group(1), hinted_shape
+
+
+def _materialize_static_input_shape(
+    hinted_shape: tuple[int, ...], input_shape: tuple[int, int]
+) -> tuple[int, ...] | None:
+    """Resolve dynamic dimensions in *hinted_shape* to static values."""
+    static_shape = list(hinted_shape)
+    for idx, dim in enumerate(static_shape):
+        if dim > 0:
+            continue
+        if idx == 0:
+            static_shape[idx] = 1  # Batch size
+        elif len(static_shape) == 4 and idx == 2:
+            static_shape[idx] = int(input_shape[0])  # Height
+        elif len(static_shape) == 4 and idx == 3:
+            static_shape[idx] = int(input_shape[1])  # Width
+        else:
+            return None
+    return tuple(static_shape)
+
+
 def _permute_calib_to_expected_shape(
     calib_data: "np.ndarray", expected_shape: tuple[int, ...]
 ) -> "np.ndarray | None":
@@ -211,18 +254,32 @@ def convert_onnx_to_hef(
         # end node names (e.g. "... using these end node names: /a, /b").
         if explicit_end_nodes:
             raise
-        suggested_end_nodes = _extract_suggested_end_nodes(str(exc))
-        if not suggested_end_nodes:
+        error_text = str(exc)
+        suggested_end_nodes = _extract_suggested_end_nodes(error_text)
+        dynamic_input_hint = _extract_dynamic_input_hint(error_text)
+        translate_retry_kwargs: dict[str, object] = {}
+
+        if suggested_end_nodes:
+            print(
+                "ONNX parser suggested end nodes; retrying with: "
+                f"{', '.join(suggested_end_nodes)}"
+            )
+            translate_retry_kwargs["end_node_names"] = suggested_end_nodes
+
+        if dynamic_input_hint:
+            input_node_name, hinted_shape = dynamic_input_hint
+            static_shape = _materialize_static_input_shape(hinted_shape, input_shape)
+            if static_shape is not None:
+                print(
+                    "ONNX parser reported dynamic input shape; retrying with "
+                    f"start node '{input_node_name}' and input shape {list(static_shape)}."
+                )
+                translate_retry_kwargs["start_node_names"] = [input_node_name]
+                translate_retry_kwargs["net_input_shapes"] = {input_node_name: list(static_shape)}
+
+        if not translate_retry_kwargs:
             raise
-        print(
-            "ONNX parser suggested end nodes; retrying with: "
-            f"{', '.join(suggested_end_nodes)}"
-        )
-        runner.translate_onnx_model(
-            str(onnx_file),
-            model_name,
-            end_node_names=suggested_end_nodes,
-        )
+        runner.translate_onnx_model(str(onnx_file), model_name, **translate_retry_kwargs)
 
     h, w = input_shape
     if calib_path:
