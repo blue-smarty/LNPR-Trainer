@@ -143,6 +143,36 @@ def _materialize_static_input_shape(
     return tuple(static_shape)
 
 
+def _is_agent_infeasible_error(error_text: str) -> bool:
+    """Return True when *error_text* signals an Agent-infeasible allocation failure."""
+    return (
+        "Agent infeasible" in error_text
+        or "No successful assignments" in error_text
+    )
+
+
+def _reoptimize_with_compression(
+    runner: "ClientRunner",
+    calib_data: "np.ndarray",
+) -> None:
+    """Re-run ``runner.optimize`` with maximum model compression.
+
+    Hailo's compiler sometimes cannot allocate a layer (``Agent infeasible``)
+    because the uncompressed model exceeds available on-chip memory.  Re-running
+    optimisation with ``compression_level=4`` applies the highest weight
+    compression and typically resolves the allocation failure.
+
+    Falls back to the default ``optimize`` call on older SDK versions that do
+    not accept the ``compression_level`` keyword.
+    """
+    try:
+        runner.optimize(calib_data, compression_level=4)
+    except TypeError:
+        # Older SDK versions do not expose compression_level; a plain re-run
+        # refreshes the quantisation state so compile() can be retried.
+        runner.optimize(calib_data)
+
+
 def _permute_calib_to_expected_shape(
     calib_data: "np.ndarray", expected_shape: tuple[int, ...]
 ) -> "np.ndarray | None":
@@ -288,6 +318,9 @@ def convert_onnx_to_hef(
         # Use random calibration data as fallback — less accurate quantization.
         calib_data = np.random.rand(_DEFAULT_RANDOM_CALIB_IMAGES, h, w, 3).astype(np.float32)
 
+    # Track the calibration data that was ultimately accepted by optimize() so
+    # that the compile-retry path can re-use it if needed.
+    final_calib = calib_data
     try:
         runner.optimize(calib_data)
     except Exception as exc:
@@ -305,8 +338,21 @@ def convert_onnx_to_hef(
             f"sample shape {tuple(permuted.shape[1:])}."
         )
         runner.optimize(permuted)
+        final_calib = permuted
 
-    hef_bytes = runner.compile()
+    try:
+        hef_bytes = runner.compile()
+    except Exception as exc:
+        error_text = str(exc)
+        if not _is_agent_infeasible_error(error_text):
+            raise
+        print(
+            "Compilation failed (Agent infeasible); "
+            "retrying optimization with model compression enabled…"
+        )
+        _reoptimize_with_compression(runner, final_calib)
+        hef_bytes = runner.compile()
+
     hef_path.write_bytes(hef_bytes)
     return hef_path
 
