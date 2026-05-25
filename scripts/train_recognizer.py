@@ -8,6 +8,10 @@ Expected dataset layout:
     <root>/train/labels.txt
     <root>/labels/train.txt
     <root>/labels_train.txt
+  Each labels line may be either:
+    <image_path><sep><text>
+  or:
+    <text><sep><image_path>
 """
 
 from __future__ import annotations
@@ -209,16 +213,23 @@ def load_split_samples(root: Path, split: str, charset: set[str]) -> list[Sample
             if parsed is None:
                 continue
 
-            image_ref, text = parsed
-            text = text.strip()
-            if not text or any(ch not in charset for ch in text):
-                continue
+            first, second = parsed
+            candidates = [(first, second), (second, first)]
+            sample: Sample | None = None
+            for image_ref, text in candidates:
+                text = text.strip()
+                if not text or any(ch not in charset for ch in text):
+                    continue
 
-            image_path = resolve_image_path(image_ref, labels_file, split_images_dir)
-            if not image_path.exists():
-                continue
+                image_path = resolve_image_path(image_ref, labels_file, split_images_dir)
+                if not image_path.exists():
+                    continue
 
-            samples.append(Sample(image_path=image_path, text=text))
+                sample = Sample(image_path=image_path, text=text)
+                break
+
+            if sample is not None:
+                samples.append(sample)
 
     if not samples:
         raise RuntimeError(
