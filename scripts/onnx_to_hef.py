@@ -386,6 +386,7 @@ def deploy_hef_to_device(
     key_path: str | None = None,
     port: int = 22,
     accept_unknown_host_key: bool = False,
+    timeout: float = 30.0,
 ) -> str:
     """Copy *hef_path* to a remote Hailo device over SSH/SFTP.
 
@@ -412,6 +413,9 @@ def deploy_hef_to_device(
         secure; only enable this on trusted private networks).  When
         ``False`` (default), the connection fails if the host key is not
         present in ``~/.ssh/known_hosts`` or the system host-key store.
+    timeout:
+        TCP connection timeout in seconds (default ``30``).  Raise
+        ``TimeoutError`` when the host is unreachable within this time.
 
     Returns
     -------
@@ -424,6 +428,8 @@ def deploy_hef_to_device(
         When ``paramiko`` is not installed.
     FileNotFoundError
         When *hef_path* does not exist locally.
+    TimeoutError
+        When the remote host does not respond within *timeout* seconds.
     """
     try:
         import paramiko
@@ -461,13 +467,22 @@ def deploy_hef_to_device(
         "hostname": host,
         "port": port,
         "username": username,
+        "timeout": timeout,
     }
     if password:
         connect_kwargs["password"] = password
     if key_path:
         connect_kwargs["key_filename"] = str(Path(key_path).expanduser())
 
-    client.connect(**connect_kwargs)  # type: ignore[arg-type]
+    import socket as _socket
+
+    try:
+        client.connect(**connect_kwargs)  # type: ignore[arg-type]
+    except _socket.timeout as exc:
+        raise TimeoutError(
+            f"Connection to {host}:{port} timed out after {timeout:.0f}s. "
+            "Check the host address and that the device is reachable."
+        ) from exc
     try:
         sftp = client.open_sftp()
         try:
