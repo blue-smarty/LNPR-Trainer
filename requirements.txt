@@ -3,3 +3,4 @@ opencv-python
 numpy
 pyyaml
 streamlit
+paramiko>=3.5.1
