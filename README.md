@@ -100,6 +100,7 @@ python scripts/train_recognizer.py \
 #   data/recognition/train/labels.txt
 #   data/recognition/labels/train.txt
 #   data/recognition/labels_train.txt
+# Each line can be: <image_path><sep><text> or <text><sep><image_path>
 
 # Export recognizer checkpoint to ONNX
 python scripts/export_recognizer_onnx.py \
