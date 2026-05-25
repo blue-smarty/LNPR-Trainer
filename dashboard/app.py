@@ -725,7 +725,8 @@ with tab_recognition:
     st.subheader("Plate text recognition")
     st.markdown(
         "Train, export, and run inference for the CRNN-based plate recognizer. "
-        "Use cropped plate images with `train/images`, `val/images`, and `labels.txt` files."
+        "Use cropped plate images with `train/images`, `val/images`, and split label files "
+        "such as `train/labels.txt` or `labels/train.txt`."
     )
 
     recognition_script_paths = {

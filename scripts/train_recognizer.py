@@ -4,8 +4,10 @@
 Expected dataset layout:
   <root>/train/images/*
   <root>/val/images/*
-  <root>/train/labels.txt (or compatible alternatives)
-  <root>/val/labels.txt (or compatible alternatives)
+  Labels file per split in any supported location, for example:
+    <root>/train/labels.txt
+    <root>/labels/train.txt
+    <root>/labels_train.txt
 """
 
 from __future__ import annotations
@@ -165,6 +167,8 @@ def candidate_label_files(root: Path, split: str) -> list[Path]:
     return [
         root / split / "labels.txt",
         root / f"{split}.txt",
+        root / "labels" / f"{split}.txt",
+        root / "labels" / split / "labels.txt",
         root / f"labels_{split}.txt",
         root / "labels.txt",
     ]
