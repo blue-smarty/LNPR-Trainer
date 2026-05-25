@@ -151,26 +151,55 @@ def _is_agent_infeasible_error(error_text: str) -> bool:
     )
 
 
-def _reoptimize_with_compression(
+def _optimize_with_optional_compression(
     runner: "ClientRunner",
     calib_data: "np.ndarray",
 ) -> None:
-    """Re-run ``runner.optimize`` with maximum model compression.
-
-    Hailo's compiler sometimes cannot allocate a layer (``Agent infeasible``)
-    because the uncompressed model exceeds available on-chip memory.  Re-running
-    optimisation with ``compression_level=4`` applies the highest weight
-    compression and typically resolves the allocation failure.
+    """Run ``runner.optimize`` with optional maximum model compression.
 
     Falls back to the default ``optimize`` call on older SDK versions that do
-    not accept the ``compression_level`` keyword.
+    not accept the ``compression_level`` keyword argument.
     """
     try:
         runner.optimize(calib_data, compression_level=4)
     except TypeError:
-        # Older SDK versions do not expose compression_level; a plain re-run
-        # refreshes the quantisation state so compile() can be retried.
+        # Older SDK versions do not expose compression_level.
         runner.optimize(calib_data)
+
+
+def _optimize_with_shape_retry(
+    runner: "ClientRunner",
+    calib_data: "np.ndarray",
+    *,
+    enable_compression: bool = False,
+) -> "np.ndarray":
+    """Optimize while preserving calibration-shape mismatch retry behavior."""
+    final_calib = calib_data
+    try:
+        if enable_compression:
+            _optimize_with_optional_compression(runner, calib_data)
+        else:
+            runner.optimize(calib_data)
+    except Exception as exc:
+        error_text = str(exc)
+        if "doesn't match network's input shape" not in error_text:
+            raise
+        expected_shape = _extract_expected_input_shape(error_text)
+        if not expected_shape:
+            raise
+        permuted = _permute_calib_to_expected_shape(calib_data, expected_shape)
+        if permuted is None:
+            raise
+        print(
+            "Calibration data shape mismatch detected; retrying optimization with "
+            f"sample shape {tuple(permuted.shape[1:])}."
+        )
+        if enable_compression:
+            _optimize_with_optional_compression(runner, permuted)
+        else:
+            runner.optimize(permuted)
+        final_calib = permuted
+    return final_calib
 
 
 def _permute_calib_to_expected_shape(
@@ -270,15 +299,12 @@ def convert_onnx_to_hef(
 
     runner = ClientRunner(hw_arch=hw_arch)
     explicit_end_nodes = _parse_node_names(end_nodes)
+    translate_kwargs: dict[str, object] = {}
+    if explicit_end_nodes:
+        translate_kwargs["end_node_names"] = explicit_end_nodes
+
     try:
-        if explicit_end_nodes:
-            runner.translate_onnx_model(
-                str(onnx_file),
-                model_name,
-                end_node_names=explicit_end_nodes,
-            )
-        else:
-            runner.translate_onnx_model(str(onnx_file), model_name)
+        runner.translate_onnx_model(str(onnx_file), model_name, **translate_kwargs)
     except Exception as exc:
         # Common Hailo parser failure mode: a parse error that includes suggested
         # end node names (e.g. "... using these end node names: /a, /b").
@@ -310,6 +336,7 @@ def convert_onnx_to_hef(
         if not translate_retry_kwargs:
             raise
         runner.translate_onnx_model(str(onnx_file), model_name, **translate_retry_kwargs)
+        translate_kwargs = translate_retry_kwargs
 
     h, w = input_shape
     if calib_path:
@@ -320,25 +347,7 @@ def convert_onnx_to_hef(
 
     # Track the calibration data that was ultimately accepted by optimize() so
     # that the compile-retry path can re-use it if needed.
-    final_calib = calib_data
-    try:
-        runner.optimize(calib_data)
-    except Exception as exc:
-        error_text = str(exc)
-        if "doesn't match network's input shape" not in error_text:
-            raise
-        expected_shape = _extract_expected_input_shape(error_text)
-        if not expected_shape:
-            raise
-        permuted = _permute_calib_to_expected_shape(calib_data, expected_shape)
-        if permuted is None:
-            raise
-        print(
-            "Calibration data shape mismatch detected; retrying optimization with "
-            f"sample shape {tuple(permuted.shape[1:])}."
-        )
-        runner.optimize(permuted)
-        final_calib = permuted
+    final_calib = _optimize_with_shape_retry(runner, calib_data)
 
     try:
         hef_bytes = runner.compile()
@@ -350,8 +359,14 @@ def convert_onnx_to_hef(
             "Compilation failed (Agent infeasible); "
             "retrying optimization with model compression enabled…"
         )
-        _reoptimize_with_compression(runner, final_calib)
-        hef_bytes = runner.compile()
+        retry_runner = ClientRunner(hw_arch=hw_arch)
+        retry_runner.translate_onnx_model(str(onnx_file), model_name, **translate_kwargs)
+        _optimize_with_shape_retry(
+            retry_runner,
+            final_calib,
+            enable_compression=True,
+        )
+        hef_bytes = retry_runner.compile()
 
     hef_path.write_bytes(hef_bytes)
     return hef_path
