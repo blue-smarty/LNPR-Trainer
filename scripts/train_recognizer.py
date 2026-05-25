@@ -122,7 +122,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rnn-hidden-size", type=int, default=256)
     parser.add_argument("--project", default="runs/recognition")
     parser.add_argument("--name", default="crnn_lp")
-    parser.add_argument("--device", default="", help="cuda device index, 'cpu', or empty for auto")
+    parser.add_argument(
+        "--device",
+        default="",
+        help="device: '', 'cpu', 'cuda', 'cuda:N', or numeric CUDA index like '0'",
+    )
     return parser.parse_args()
 
 
@@ -259,8 +263,13 @@ def decode_greedy(logits: torch.Tensor, charset: str, blank_idx: int) -> list[st
 
 
 def choose_device(device_arg: str) -> torch.device:
-    if device_arg.strip():
-        return torch.device(device_arg.strip())
+    raw = device_arg.strip()
+    if raw:
+        candidate = f"cuda:{raw}" if raw.isdigit() else raw
+        try:
+            return torch.device(candidate)
+        except (TypeError, RuntimeError, ValueError) as exc:
+            raise SystemExit(f"Invalid --device value '{device_arg}': {exc}") from exc
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
