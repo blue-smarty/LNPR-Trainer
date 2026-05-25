@@ -88,13 +88,18 @@ The dashboard provides a simple interface for:
 The repository includes CRNN-based recognition scripts used by the dashboard:
 
 ```bash
-# Train recognizer (expects train/images, val/images and labels.txt files)
+# Train recognizer (expects train/images, val/images, and split label files)
 python scripts/train_recognizer.py \
   --data data/recognition \
   --epochs 30 \
   --batch 32 \
   --img-height 32 \
   --img-width 160
+
+# Supported label file locations include:
+#   data/recognition/train/labels.txt
+#   data/recognition/labels/train.txt
+#   data/recognition/labels_train.txt
 
 # Export recognizer checkpoint to ONNX
 python scripts/export_recognizer_onnx.py \
