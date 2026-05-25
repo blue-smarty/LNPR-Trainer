@@ -582,6 +582,14 @@ with tab_hef:
             key="deploy_port",
             help="SSH port on the remote device (default: 22).",
         )
+        deploy_timeout = st.number_input(
+            "Connection timeout (seconds)",
+            min_value=1,
+            max_value=300,
+            value=30,
+            key="deploy_timeout",
+            help="Seconds to wait for the SSH connection before giving up (default: 30).",
+        )
         deploy_accept_unknown = st.checkbox(
             "Accept unknown host key",
             key="deploy_accept_unknown",
@@ -628,6 +636,7 @@ with tab_hef:
                         key_path=deploy_key_path.strip() if deploy_key_path.strip() else None,
                         port=int(deploy_port),
                         accept_unknown_host_key=deploy_accept_unknown,
+                        timeout=float(deploy_timeout),
                     )
                     st.success(
                         f"HEF deployed successfully to `{deploy_host}:{remote_dest}`"
