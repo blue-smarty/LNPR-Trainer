@@ -43,6 +43,12 @@ COMMON_MODELS = [
     "custom / enter below",
 ]
 
+RECOGNITION_ACTION_SCRIPTS = {
+    "Train recognizer": "train_recognizer.py",
+    "Export recognizer ONNX": "export_recognizer_onnx.py",
+    "Run end-to-end inference": "infer_plate_text.py",
+}
+
 
 def list_paths(pattern: str, default_value: str) -> list[str]:
     options: set[str] = {default_value}
@@ -72,11 +78,18 @@ def run_subprocess(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
 
 
+def get_script_path(script_name: str) -> Path | None:
+    """Return script path when present."""
+    script_path = REPO_ROOT / "scripts" / script_name
+    return script_path if script_path.exists() else None
+
+
 def ensure_script_exists(script_name: str) -> Path | None:
     """Return script path when present; otherwise show a dashboard error."""
-    script_path = REPO_ROOT / "scripts" / script_name
-    if script_path.exists():
+    script_path = get_script_path(script_name)
+    if script_path is not None:
         return script_path
+    script_path = REPO_ROOT / "scripts" / script_name
     st.error(f"Required script not found: {script_path}")
     st.info(
         "This recognition action is unavailable because the required script is "
@@ -706,13 +719,39 @@ with tab_recognition:
         "Use cropped plate images with `train/images`, `val/images`, and `labels.txt` files."
     )
 
-    rec_action = st.radio(
-        "Recognition action",
-        ["Train recognizer", "Export recognizer ONNX", "Run end-to-end inference"],
-        horizontal=True,
-    )
+    recognition_script_paths = {
+        action: get_script_path(script_name)
+        for action, script_name in RECOGNITION_ACTION_SCRIPTS.items()
+    }
+    available_recognition_actions = [
+        action for action, script_path in recognition_script_paths.items() if script_path is not None
+    ]
+    missing_recognition_scripts = [
+        script_name
+        for action, script_name in RECOGNITION_ACTION_SCRIPTS.items()
+        if recognition_script_paths[action] is None
+    ]
 
-    if rec_action == "Train recognizer":
+    if not available_recognition_actions:
+        st.warning("Recognition tools are not available in this checkout yet.")
+        st.caption(
+            "Missing scripts: "
+            + ", ".join(f"`scripts/{script_name}`" for script_name in missing_recognition_scripts)
+        )
+    else:
+        if missing_recognition_scripts:
+            st.info(
+                "Some recognition actions are hidden because their supporting scripts are missing: "
+                + ", ".join(f"`scripts/{script_name}`" for script_name in missing_recognition_scripts)
+            )
+
+        rec_action = st.radio(
+            "Recognition action",
+            available_recognition_actions,
+            horizontal=True,
+        )
+
+    if available_recognition_actions and rec_action == "Train recognizer":
         rec_data = st.text_input("Recognition dataset root", value="data/recognition")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -789,7 +828,7 @@ with tab_recognition:
                 except Exception as exc:
                     show_exception(exc)
 
-    elif rec_action == "Export recognizer ONNX":
+    elif available_recognition_actions and rec_action == "Export recognizer ONNX":
         rec_weights = st.text_input(
             "Recognizer checkpoint",
             value="runs/recognition/crnn_lp/weights/best.pt",
@@ -847,7 +886,7 @@ with tab_recognition:
                 except Exception as exc:
                     show_exception(exc)
 
-    else:
+    elif available_recognition_actions:
         infer_image = st.text_input("Image path", value="")
         infer_detector = st.text_input("Detector weights", value="runs/detect/lnpr/weights/best.pt")
         infer_recognizer = st.text_input("Recognizer checkpoint", value="runs/recognition/crnn_lp/weights/best.pt")
