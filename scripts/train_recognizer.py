@@ -207,6 +207,10 @@ def load_split_samples(root: Path, split: str, charset: set[str]) -> list[Sample
         raise FileNotFoundError(f"Missing images directory for split '{split}': {split_images_dir}")
 
     samples: list[Sample] = []
+    skipped_charset = 0
+    skipped_image = 0
+    bad_charset_examples: list[str] = []
+    bad_image_examples: list[str] = []
     with labels_file.open("r", encoding="utf-8") as f:
         for line in f:
             parsed = parse_label_line(line)
@@ -216,13 +220,26 @@ def load_split_samples(root: Path, split: str, charset: set[str]) -> list[Sample
             first, second = parsed
             candidates = [(first, second), (second, first)]
             sample: Sample | None = None
+            _charset_fail = False
+            _image_fail = False
             for image_ref, text in candidates:
                 text = text.strip()
-                if not text or any(ch not in charset for ch in text):
+                if not text:
+                    continue
+                bad_chars = [ch for ch in text if ch not in charset]
+                if bad_chars:
+                    _charset_fail = True
+                    if len(bad_charset_examples) < 3:
+                        bad_charset_examples.append(
+                            f"'{text}' (chars not in charset: {bad_chars!r})"
+                        )
                     continue
 
                 image_path = resolve_image_path(image_ref, labels_file, split_images_dir)
                 if not image_path.exists():
+                    _image_fail = True
+                    if len(bad_image_examples) < 3:
+                        bad_image_examples.append(str(image_path))
                     continue
 
                 sample = Sample(image_path=image_path, text=text)
@@ -230,11 +247,25 @@ def load_split_samples(root: Path, split: str, charset: set[str]) -> list[Sample
 
             if sample is not None:
                 samples.append(sample)
+            else:
+                if _charset_fail:
+                    skipped_charset += 1
+                elif _image_fail:
+                    skipped_image += 1
 
     if not samples:
-        raise RuntimeError(
-            f"No valid samples loaded for split '{split}' from labels file: {labels_file}"
-        )
+        details: list[str] = [
+            f"No valid samples loaded for split '{split}' from labels file: {labels_file}",
+            f"  Skipped due to charset mismatch: {skipped_charset}",
+            f"  Skipped due to missing image:    {skipped_image}",
+        ]
+        if bad_charset_examples:
+            details.append("  Charset mismatch examples: " + "; ".join(bad_charset_examples))
+            details.append(f"  Allowed charset: {sorted(charset)!r}")
+        if bad_image_examples:
+            details.append("  Missing image examples: " + "; ".join(bad_image_examples))
+            details.append(f"  Images directory searched: {split_images_dir}")
+        raise RuntimeError("\n".join(details))
 
     return samples
 
