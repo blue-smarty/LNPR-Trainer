@@ -72,6 +72,19 @@ def run_subprocess(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
 
 
+def ensure_script_exists(script_name: str) -> Path | None:
+    """Return script path when present; otherwise show a dashboard error."""
+    script_path = REPO_ROOT / "scripts" / script_name
+    if script_path.exists():
+        return script_path
+    st.error(f"Required script not found: {script_path}")
+    st.info(
+        "This recognition action is unavailable because the required script is "
+        "missing in your checkout."
+    )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -724,50 +737,57 @@ with tab_recognition:
         rec_device = st.text_input("Device", value="", key="rec_device")
 
         if st.button("Run recognizer training", type="primary"):
-            try:
-                cmd = [
-                    sys.executable,
-                    str(REPO_ROOT / "scripts" / "train_recognizer.py"),
-                    "--data",
-                    rec_data,
-                    "--epochs",
-                    str(int(rec_epochs)),
-                    "--batch",
-                    str(int(rec_batch)),
-                    "--img-height",
-                    str(int(rec_h)),
-                    "--img-width",
-                    str(int(rec_w)),
-                    "--lr",
-                    str(float(rec_lr)),
-                    "--workers",
-                    str(int(rec_workers)),
-                    "--charset",
-                    rec_charset,
-                    "--rnn-hidden-size",
-                    str(int(rec_hidden)),
-                    "--project",
-                    rec_project,
-                    "--name",
-                    rec_name,
-                ]
-                if rec_device.strip():
-                    cmd += ["--device", rec_device.strip()]
+            script_path = ensure_script_exists("train_recognizer.py")
+            if script_path is not None:
+                try:
+                    cmd = [
+                        sys.executable,
+                        str(script_path),
+                        "--data",
+                        rec_data,
+                        "--epochs",
+                        str(int(rec_epochs)),
+                        "--batch",
+                        str(int(rec_batch)),
+                        "--img-height",
+                        str(int(rec_h)),
+                        "--img-width",
+                        str(int(rec_w)),
+                        "--lr",
+                        str(float(rec_lr)),
+                        "--workers",
+                        str(int(rec_workers)),
+                        "--charset",
+                        rec_charset,
+                        "--rnn-hidden-size",
+                        str(int(rec_hidden)),
+                        "--project",
+                        rec_project,
+                        "--name",
+                        rec_name,
+                    ]
+                    if rec_device.strip():
+                        cmd += ["--device", rec_device.strip()]
 
-                proc = run_subprocess(cmd)
-                st.success("Recognizer training completed successfully.")
-                if proc.stdout.strip():
-                    st.code(proc.stdout, language="text")
-                if proc.stderr.strip():
-                    st.code(proc.stderr, language="text")
-            except subprocess.CalledProcessError as exc:
-                if exc.stdout:
-                    st.code(exc.stdout, language="text")
-                if exc.stderr:
-                    st.code(exc.stderr, language="text")
-                show_exception(exc)
-            except Exception as exc:
-                show_exception(exc)
+                    proc = run_subprocess(cmd)
+                    st.success("Recognizer training completed successfully.")
+                    if proc.stdout.strip():
+                        st.code(proc.stdout, language="text")
+                    if proc.stderr.strip():
+                        st.code(proc.stderr, language="text")
+                except subprocess.CalledProcessError as exc:
+                    if exc.returncode == 2:
+                        st.warning(
+                            "Recognizer script exited with code 2, which usually means "
+                            "invalid or unsupported command-line arguments."
+                        )
+                    if exc.stdout:
+                        st.code(exc.stdout, language="text")
+                    if exc.stderr:
+                        st.code(exc.stderr, language="text")
+                    show_exception(exc)
+                except Exception as exc:
+                    show_exception(exc)
 
     elif rec_action == "Export recognizer ONNX":
         rec_weights = st.text_input(
@@ -785,40 +805,47 @@ with tab_recognition:
         rec_export_device = st.text_input("Device", value="cpu", key="rec_export_device")
 
         if st.button("Export recognizer ONNX", type="primary"):
-            try:
-                cmd = [
-                    sys.executable,
-                    str(REPO_ROOT / "scripts" / "export_recognizer_onnx.py"),
-                    "--weights",
-                    rec_weights,
-                    "--img-height",
-                    str(int(rec_exp_h)),
-                    "--img-width",
-                    str(int(rec_exp_w)),
-                    "--opset",
-                    str(int(rec_opset)),
-                    "--device",
-                    rec_export_device,
-                ]
-                if rec_output.strip():
-                    cmd += ["--output", rec_output.strip()]
-                if rec_dynamic:
-                    cmd.append("--dynamic-width")
+            script_path = ensure_script_exists("export_recognizer_onnx.py")
+            if script_path is not None:
+                try:
+                    cmd = [
+                        sys.executable,
+                        str(script_path),
+                        "--weights",
+                        rec_weights,
+                        "--img-height",
+                        str(int(rec_exp_h)),
+                        "--img-width",
+                        str(int(rec_exp_w)),
+                        "--opset",
+                        str(int(rec_opset)),
+                        "--device",
+                        rec_export_device,
+                    ]
+                    if rec_output.strip():
+                        cmd += ["--output", rec_output.strip()]
+                    if rec_dynamic:
+                        cmd.append("--dynamic-width")
 
-                proc = run_subprocess(cmd)
-                st.success("Recognizer ONNX export completed successfully.")
-                if proc.stdout.strip():
-                    st.code(proc.stdout, language="text")
-                if proc.stderr.strip():
-                    st.code(proc.stderr, language="text")
-            except subprocess.CalledProcessError as exc:
-                if exc.stdout:
-                    st.code(exc.stdout, language="text")
-                if exc.stderr:
-                    st.code(exc.stderr, language="text")
-                show_exception(exc)
-            except Exception as exc:
-                show_exception(exc)
+                    proc = run_subprocess(cmd)
+                    st.success("Recognizer ONNX export completed successfully.")
+                    if proc.stdout.strip():
+                        st.code(proc.stdout, language="text")
+                    if proc.stderr.strip():
+                        st.code(proc.stderr, language="text")
+                except subprocess.CalledProcessError as exc:
+                    if exc.returncode == 2:
+                        st.warning(
+                            "Recognizer export script exited with code 2, which usually "
+                            "means invalid or unsupported command-line arguments."
+                        )
+                    if exc.stdout:
+                        st.code(exc.stdout, language="text")
+                    if exc.stderr:
+                        st.code(exc.stderr, language="text")
+                    show_exception(exc)
+                except Exception as exc:
+                    show_exception(exc)
 
     else:
         infer_image = st.text_input("Image path", value="")
@@ -846,51 +873,58 @@ with tab_recognition:
         infer_output_json = st.text_input("Output JSON path (optional)", value="")
 
         if st.button("Run end-to-end inference", type="primary"):
-            try:
-                cmd = [
-                    sys.executable,
-                    str(REPO_ROOT / "scripts" / "infer_plate_text.py"),
-                    "--image",
-                    infer_image,
-                    "--detector",
-                    infer_detector,
-                    "--recognizer",
-                    infer_recognizer,
-                    "--imgsz",
-                    str(int(infer_imgsz)),
-                    "--conf",
-                    str(float(infer_conf)),
-                    "--iou",
-                    str(float(infer_iou)),
-                    "--max-det",
-                    str(int(infer_max_det)),
-                    "--rec-img-height",
-                    str(int(infer_rec_h)),
-                    "--rec-img-width",
-                    str(int(infer_rec_w)),
-                ]
-                if infer_device.strip():
-                    cmd += ["--device", infer_device.strip()]
-                if infer_save_crops:
-                    cmd.append("--save-crops")
-                if infer_output_json.strip():
-                    cmd += ["--output-json", infer_output_json.strip()]
+            script_path = ensure_script_exists("infer_plate_text.py")
+            if script_path is not None:
+                try:
+                    cmd = [
+                        sys.executable,
+                        str(script_path),
+                        "--image",
+                        infer_image,
+                        "--detector",
+                        infer_detector,
+                        "--recognizer",
+                        infer_recognizer,
+                        "--imgsz",
+                        str(int(infer_imgsz)),
+                        "--conf",
+                        str(float(infer_conf)),
+                        "--iou",
+                        str(float(infer_iou)),
+                        "--max-det",
+                        str(int(infer_max_det)),
+                        "--rec-img-height",
+                        str(int(infer_rec_h)),
+                        "--rec-img-width",
+                        str(int(infer_rec_w)),
+                    ]
+                    if infer_device.strip():
+                        cmd += ["--device", infer_device.strip()]
+                    if infer_save_crops:
+                        cmd.append("--save-crops")
+                    if infer_output_json.strip():
+                        cmd += ["--output-json", infer_output_json.strip()]
 
-                proc = run_subprocess(cmd)
-                st.success("Inference completed successfully.")
-                if proc.stdout.strip():
-                    try:
-                        parsed = json.loads(proc.stdout)
-                        st.json(parsed)
-                    except Exception:
-                        st.code(proc.stdout, language="json")
-                if proc.stderr.strip():
-                    st.code(proc.stderr, language="text")
-            except subprocess.CalledProcessError as exc:
-                if exc.stdout:
-                    st.code(exc.stdout, language="text")
-                if exc.stderr:
-                    st.code(exc.stderr, language="text")
-                show_exception(exc)
-            except Exception as exc:
-                show_exception(exc)
+                    proc = run_subprocess(cmd)
+                    st.success("Inference completed successfully.")
+                    if proc.stdout.strip():
+                        try:
+                            parsed = json.loads(proc.stdout)
+                            st.json(parsed)
+                        except Exception:
+                            st.code(proc.stdout, language="json")
+                    if proc.stderr.strip():
+                        st.code(proc.stderr, language="text")
+                except subprocess.CalledProcessError as exc:
+                    if exc.returncode == 2:
+                        st.warning(
+                            "Inference script exited with code 2, which usually means "
+                            "invalid or unsupported command-line arguments."
+                        )
+                    if exc.stdout:
+                        st.code(exc.stdout, language="text")
+                    if exc.stderr:
+                        st.code(exc.stderr, language="text")
+                    show_exception(exc)
+                except Exception as exc:
+                    show_exception(exc)
