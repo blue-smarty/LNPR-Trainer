@@ -179,6 +179,47 @@ def validate_hef_params(
     return ValidationResult(errors=errors, warnings=warnings)
 
 
+def validate_deploy_params(
+    host: str,
+    username: str,
+    remote_path: str,
+    password: str,
+    key_path: str,
+) -> ValidationResult:
+    """Validate SSH deployment parameters before copying a HEF to a Hailo device."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not host or not host.strip():
+        errors.append("Device host / IP address must not be empty.")
+
+    if not username or not username.strip():
+        errors.append("SSH username must not be empty.")
+
+    if not remote_path or not remote_path.strip():
+        errors.append("Remote path must not be empty.")
+    elif not remote_path.strip().startswith("/"):
+        warnings.append(
+            "Remote path does not start with '/'; ensure it is an absolute path on the device."
+        )
+
+    has_password = bool(password and password.strip())
+    has_key = bool(key_path and key_path.strip())
+
+    if not has_password and not has_key:
+        warnings.append(
+            "No SSH password or key file provided. "
+            "Deployment will rely on a key loaded from the SSH agent or default key (~/.ssh/id_rsa)."
+        )
+
+    if has_key:
+        key_file = Path(key_path.strip()).expanduser()
+        if not key_file.exists():
+            errors.append(f"SSH key file not found: {key_file}")
+
+    return ValidationResult(errors=errors, warnings=warnings)
+
+
 def validate_export_params(
     weights: str,
     imgsz: int,

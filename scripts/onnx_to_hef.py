@@ -373,6 +373,114 @@ def convert_onnx_to_hef(
 
 
 # ---------------------------------------------------------------------------
+# Hailo device deployment
+# ---------------------------------------------------------------------------
+
+def deploy_hef_to_device(
+    hef_path: str | Path,
+    host: str,
+    username: str,
+    remote_path: str,
+    *,
+    password: str | None = None,
+    key_path: str | None = None,
+    port: int = 22,
+    accept_unknown_host_key: bool = False,
+) -> str:
+    """Copy *hef_path* to a remote Hailo device over SSH/SFTP.
+
+    Parameters
+    ----------
+    hef_path:
+        Local path to the ``.hef`` file to upload.
+    host:
+        Hostname or IP address of the target Hailo device.
+    username:
+        SSH username on the remote device.
+    remote_path:
+        Absolute path on the remote device where the HEF will be stored.
+        If *remote_path* ends with ``/`` it is treated as a directory and
+        the original filename is appended automatically.
+    password:
+        SSH password.  Mutually exclusive with *key_path*.
+    key_path:
+        Path to a private SSH key file (e.g. ``~/.ssh/id_rsa``).
+    port:
+        SSH port (default ``22``).
+    accept_unknown_host_key:
+        When ``True``, unknown host keys are automatically accepted (less
+        secure; only enable this on trusted private networks).  When
+        ``False`` (default), the connection fails if the host key is not
+        present in ``~/.ssh/known_hosts`` or the system host-key store.
+
+    Returns
+    -------
+    str
+        The final remote path where the file was stored.
+
+    Raises
+    ------
+    ImportError
+        When ``paramiko`` is not installed.
+    FileNotFoundError
+        When *hef_path* does not exist locally.
+    """
+    try:
+        import paramiko
+    except ImportError as exc:
+        raise ImportError(
+            "paramiko is required for Hailo device deployment.\n"
+            "Install it with: pip install paramiko"
+        ) from exc
+
+    hef_file = Path(hef_path)
+    if not hef_file.exists():
+        raise FileNotFoundError(f"HEF file not found: {hef_file}")
+
+    # If remote_path is a directory (ends with /), append the filename.
+    if remote_path.endswith("/"):
+        remote_dest = remote_path + hef_file.name
+    else:
+        remote_dest = remote_path
+
+    client = paramiko.SSHClient()
+    # Load known host keys from the system and user stores first so that
+    # already-trusted hosts are accepted without needing a password.
+    client.load_system_host_keys()
+    try:
+        client.load_host_keys(str(Path("~/.ssh/known_hosts").expanduser()))
+    except OSError:
+        pass  # known_hosts may not exist yet; that is fine
+
+    if accept_unknown_host_key:
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    else:
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+
+    connect_kwargs: dict[str, object] = {
+        "hostname": host,
+        "port": port,
+        "username": username,
+    }
+    if password:
+        connect_kwargs["password"] = password
+    if key_path:
+        connect_kwargs["key_filename"] = str(Path(key_path).expanduser())
+
+    client.connect(**connect_kwargs)  # type: ignore[arg-type]
+    try:
+        sftp = client.open_sftp()
+        try:
+            sftp.put(str(hef_file), remote_dest)
+        finally:
+            sftp.close()
+    finally:
+        client.close()
+
+    return remote_dest
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 

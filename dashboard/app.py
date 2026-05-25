@@ -19,6 +19,7 @@ from dashboard.validation import (
     validate_train_params,
     validate_export_params,
     validate_hef_params,
+    validate_deploy_params,
 )
 from dashboard.artifacts import (
     find_recent_runs,
@@ -69,6 +70,19 @@ def show_exception(exc: Exception) -> None:
 
 def run_subprocess(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+
+
+def ensure_script_exists(script_name: str) -> Path | None:
+    """Return script path when present; otherwise show a dashboard error."""
+    script_path = REPO_ROOT / "scripts" / script_name
+    if script_path.exists():
+        return script_path
+    st.error(f"Required script not found: {script_path}")
+    st.info(
+        "This recognition action is unavailable because the required script is "
+        "missing in your checkout."
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -494,12 +508,120 @@ with tab_hef:
                         st.code(str(hef_path), language="text")
                     with col2:
                         st.metric("HEF size", format_size(hef_path))
+                    st.session_state["last_hef_path"] = str(hef_path)
                 except ImportError as exc:
                     st.error(str(exc))
                     st.info(
                         "Install the Hailo SDK from https://developer.hailo.ai "
                         "and re-run the conversion."
                     )
+                except Exception as exc:  # pragma: no cover - UI feedback path
+                    show_exception(exc)
+
+    st.divider()
+    st.markdown("#### Deploy HEF to Hailo device")
+    st.markdown(
+        "Copy the converted `.hef` file directly to a Hailo device (e.g. Raspberry Pi + "
+        "Hailo-8L HAT) over SSH/SFTP."
+    )
+
+    deploy_host = st.text_input(
+        "Device host / IP",
+        value="",
+        key="deploy_host",
+        help="Hostname or IP address of the target Hailo device.",
+    )
+    deploy_user = st.text_input(
+        "SSH username",
+        value="pi",
+        key="deploy_user",
+        help="SSH username on the remote device.",
+    )
+    deploy_remote_path = st.text_input(
+        "Remote destination path",
+        value="/home/pi/models/",
+        key="deploy_remote_path",
+        help=(
+            "Absolute path on the device where the HEF will be stored. "
+            "Paths ending with '/' are treated as directories."
+        ),
+    )
+
+    with st.expander("SSH authentication"):
+        deploy_password = st.text_input(
+            "SSH password (optional)",
+            value="",
+            type="password",
+            key="deploy_password",
+            help="Leave blank to use an SSH key instead.",
+        )
+        deploy_key_path = st.text_input(
+            "SSH private key path (optional)",
+            value="",
+            key="deploy_key_path",
+            help="Path to your local private key, e.g. ~/.ssh/id_rsa.",
+        )
+        deploy_port = st.number_input(
+            "SSH port",
+            min_value=1,
+            max_value=65535,
+            value=22,
+            key="deploy_port",
+            help="SSH port on the remote device (default: 22).",
+        )
+        deploy_accept_unknown = st.checkbox(
+            "Accept unknown host key",
+            key="deploy_accept_unknown",
+            help=(
+                "Automatically accept the device's SSH host key if not already in "
+                "~/.ssh/known_hosts. Only enable on trusted private networks."
+            ),
+        )
+
+    deploy_hef_input = st.text_input(
+        "HEF file to deploy",
+        value=st.session_state.get("last_hef_path", ""),
+        key="deploy_hef_input",
+        help=(
+            "Path to the .hef file to upload. "
+            "Auto-filled after a successful conversion above."
+        ),
+    )
+
+    if st.button("Deploy HEF to device", type="secondary"):
+        deploy_result = validate_deploy_params(
+            host=deploy_host,
+            username=deploy_user,
+            remote_path=deploy_remote_path,
+            password=deploy_password,
+            key_path=deploy_key_path,
+        )
+        hef_deploy_path = deploy_hef_input.strip()
+        if not hef_deploy_path:
+            st.error("HEF file path must not be empty. Run the conversion above first.")
+        elif not Path(hef_deploy_path).exists():
+            st.error(f"HEF file not found: {hef_deploy_path}")
+        elif show_validation(deploy_result):
+            with st.spinner(f"Deploying {Path(hef_deploy_path).name} to {deploy_host}…"):
+                try:
+                    from scripts.onnx_to_hef import deploy_hef_to_device
+
+                    remote_dest = deploy_hef_to_device(
+                        hef_path=hef_deploy_path,
+                        host=deploy_host.strip(),
+                        username=deploy_user.strip(),
+                        remote_path=deploy_remote_path.strip(),
+                        password=deploy_password.strip() if deploy_password.strip() else None,
+                        key_path=deploy_key_path.strip() if deploy_key_path.strip() else None,
+                        port=int(deploy_port),
+                        accept_unknown_host_key=deploy_accept_unknown,
+                    )
+                    st.success(
+                        f"HEF deployed successfully to `{deploy_host}:{remote_dest}`"
+                    )
+                except ImportError as exc:
+                    st.error(str(exc))
+                    st.info("Install paramiko with: pip install paramiko")
                 except Exception as exc:  # pragma: no cover - UI feedback path
                     show_exception(exc)
 
@@ -615,50 +737,57 @@ with tab_recognition:
         rec_device = st.text_input("Device", value="", key="rec_device")
 
         if st.button("Run recognizer training", type="primary"):
-            try:
-                cmd = [
-                    sys.executable,
-                    str(REPO_ROOT / "scripts" / "train_recognizer.py"),
-                    "--data",
-                    rec_data,
-                    "--epochs",
-                    str(int(rec_epochs)),
-                    "--batch",
-                    str(int(rec_batch)),
-                    "--img-height",
-                    str(int(rec_h)),
-                    "--img-width",
-                    str(int(rec_w)),
-                    "--lr",
-                    str(float(rec_lr)),
-                    "--workers",
-                    str(int(rec_workers)),
-                    "--charset",
-                    rec_charset,
-                    "--rnn-hidden-size",
-                    str(int(rec_hidden)),
-                    "--project",
-                    rec_project,
-                    "--name",
-                    rec_name,
-                ]
-                if rec_device.strip():
-                    cmd += ["--device", rec_device.strip()]
+            script_path = ensure_script_exists("train_recognizer.py")
+            if script_path is not None:
+                try:
+                    cmd = [
+                        sys.executable,
+                        str(script_path),
+                        "--data",
+                        rec_data,
+                        "--epochs",
+                        str(int(rec_epochs)),
+                        "--batch",
+                        str(int(rec_batch)),
+                        "--img-height",
+                        str(int(rec_h)),
+                        "--img-width",
+                        str(int(rec_w)),
+                        "--lr",
+                        str(float(rec_lr)),
+                        "--workers",
+                        str(int(rec_workers)),
+                        "--charset",
+                        rec_charset,
+                        "--rnn-hidden-size",
+                        str(int(rec_hidden)),
+                        "--project",
+                        rec_project,
+                        "--name",
+                        rec_name,
+                    ]
+                    if rec_device.strip():
+                        cmd += ["--device", rec_device.strip()]
 
-                proc = run_subprocess(cmd)
-                st.success("Recognizer training completed successfully.")
-                if proc.stdout.strip():
-                    st.code(proc.stdout, language="text")
-                if proc.stderr.strip():
-                    st.code(proc.stderr, language="text")
-            except subprocess.CalledProcessError as exc:
-                if exc.stdout:
-                    st.code(exc.stdout, language="text")
-                if exc.stderr:
-                    st.code(exc.stderr, language="text")
-                show_exception(exc)
-            except Exception as exc:
-                show_exception(exc)
+                    proc = run_subprocess(cmd)
+                    st.success("Recognizer training completed successfully.")
+                    if proc.stdout.strip():
+                        st.code(proc.stdout, language="text")
+                    if proc.stderr.strip():
+                        st.code(proc.stderr, language="text")
+                except subprocess.CalledProcessError as exc:
+                    if exc.returncode == 2:
+                        st.warning(
+                            "Recognizer script exited with code 2, which usually means "
+                            "invalid or unsupported command-line arguments."
+                        )
+                    if exc.stdout:
+                        st.code(exc.stdout, language="text")
+                    if exc.stderr:
+                        st.code(exc.stderr, language="text")
+                    show_exception(exc)
+                except Exception as exc:
+                    show_exception(exc)
 
     elif rec_action == "Export recognizer ONNX":
         rec_weights = st.text_input(
@@ -676,40 +805,47 @@ with tab_recognition:
         rec_export_device = st.text_input("Device", value="cpu", key="rec_export_device")
 
         if st.button("Export recognizer ONNX", type="primary"):
-            try:
-                cmd = [
-                    sys.executable,
-                    str(REPO_ROOT / "scripts" / "export_recognizer_onnx.py"),
-                    "--weights",
-                    rec_weights,
-                    "--img-height",
-                    str(int(rec_exp_h)),
-                    "--img-width",
-                    str(int(rec_exp_w)),
-                    "--opset",
-                    str(int(rec_opset)),
-                    "--device",
-                    rec_export_device,
-                ]
-                if rec_output.strip():
-                    cmd += ["--output", rec_output.strip()]
-                if rec_dynamic:
-                    cmd.append("--dynamic-width")
+            script_path = ensure_script_exists("export_recognizer_onnx.py")
+            if script_path is not None:
+                try:
+                    cmd = [
+                        sys.executable,
+                        str(script_path),
+                        "--weights",
+                        rec_weights,
+                        "--img-height",
+                        str(int(rec_exp_h)),
+                        "--img-width",
+                        str(int(rec_exp_w)),
+                        "--opset",
+                        str(int(rec_opset)),
+                        "--device",
+                        rec_export_device,
+                    ]
+                    if rec_output.strip():
+                        cmd += ["--output", rec_output.strip()]
+                    if rec_dynamic:
+                        cmd.append("--dynamic-width")
 
-                proc = run_subprocess(cmd)
-                st.success("Recognizer ONNX export completed successfully.")
-                if proc.stdout.strip():
-                    st.code(proc.stdout, language="text")
-                if proc.stderr.strip():
-                    st.code(proc.stderr, language="text")
-            except subprocess.CalledProcessError as exc:
-                if exc.stdout:
-                    st.code(exc.stdout, language="text")
-                if exc.stderr:
-                    st.code(exc.stderr, language="text")
-                show_exception(exc)
-            except Exception as exc:
-                show_exception(exc)
+                    proc = run_subprocess(cmd)
+                    st.success("Recognizer ONNX export completed successfully.")
+                    if proc.stdout.strip():
+                        st.code(proc.stdout, language="text")
+                    if proc.stderr.strip():
+                        st.code(proc.stderr, language="text")
+                except subprocess.CalledProcessError as exc:
+                    if exc.returncode == 2:
+                        st.warning(
+                            "Recognizer export script exited with code 2, which usually "
+                            "means invalid or unsupported command-line arguments."
+                        )
+                    if exc.stdout:
+                        st.code(exc.stdout, language="text")
+                    if exc.stderr:
+                        st.code(exc.stderr, language="text")
+                    show_exception(exc)
+                except Exception as exc:
+                    show_exception(exc)
 
     else:
         infer_image = st.text_input("Image path", value="")
@@ -737,51 +873,58 @@ with tab_recognition:
         infer_output_json = st.text_input("Output JSON path (optional)", value="")
 
         if st.button("Run end-to-end inference", type="primary"):
-            try:
-                cmd = [
-                    sys.executable,
-                    str(REPO_ROOT / "scripts" / "infer_plate_text.py"),
-                    "--image",
-                    infer_image,
-                    "--detector",
-                    infer_detector,
-                    "--recognizer",
-                    infer_recognizer,
-                    "--imgsz",
-                    str(int(infer_imgsz)),
-                    "--conf",
-                    str(float(infer_conf)),
-                    "--iou",
-                    str(float(infer_iou)),
-                    "--max-det",
-                    str(int(infer_max_det)),
-                    "--rec-img-height",
-                    str(int(infer_rec_h)),
-                    "--rec-img-width",
-                    str(int(infer_rec_w)),
-                ]
-                if infer_device.strip():
-                    cmd += ["--device", infer_device.strip()]
-                if infer_save_crops:
-                    cmd.append("--save-crops")
-                if infer_output_json.strip():
-                    cmd += ["--output-json", infer_output_json.strip()]
+            script_path = ensure_script_exists("infer_plate_text.py")
+            if script_path is not None:
+                try:
+                    cmd = [
+                        sys.executable,
+                        str(script_path),
+                        "--image",
+                        infer_image,
+                        "--detector",
+                        infer_detector,
+                        "--recognizer",
+                        infer_recognizer,
+                        "--imgsz",
+                        str(int(infer_imgsz)),
+                        "--conf",
+                        str(float(infer_conf)),
+                        "--iou",
+                        str(float(infer_iou)),
+                        "--max-det",
+                        str(int(infer_max_det)),
+                        "--rec-img-height",
+                        str(int(infer_rec_h)),
+                        "--rec-img-width",
+                        str(int(infer_rec_w)),
+                    ]
+                    if infer_device.strip():
+                        cmd += ["--device", infer_device.strip()]
+                    if infer_save_crops:
+                        cmd.append("--save-crops")
+                    if infer_output_json.strip():
+                        cmd += ["--output-json", infer_output_json.strip()]
 
-                proc = run_subprocess(cmd)
-                st.success("Inference completed successfully.")
-                if proc.stdout.strip():
-                    try:
-                        parsed = json.loads(proc.stdout)
-                        st.json(parsed)
-                    except Exception:
-                        st.code(proc.stdout, language="json")
-                if proc.stderr.strip():
-                    st.code(proc.stderr, language="text")
-            except subprocess.CalledProcessError as exc:
-                if exc.stdout:
-                    st.code(exc.stdout, language="text")
-                if exc.stderr:
-                    st.code(exc.stderr, language="text")
-                show_exception(exc)
-            except Exception as exc:
-                show_exception(exc)
+                    proc = run_subprocess(cmd)
+                    st.success("Inference completed successfully.")
+                    if proc.stdout.strip():
+                        try:
+                            parsed = json.loads(proc.stdout)
+                            st.json(parsed)
+                        except Exception:
+                            st.code(proc.stdout, language="json")
+                    if proc.stderr.strip():
+                        st.code(proc.stderr, language="text")
+                except subprocess.CalledProcessError as exc:
+                    if exc.returncode == 2:
+                        st.warning(
+                            "Inference script exited with code 2, which usually means "
+                            "invalid or unsupported command-line arguments."
+                        )
+                    if exc.stdout:
+                        st.code(exc.stdout, language="text")
+                    if exc.stderr:
+                        st.code(exc.stderr, language="text")
+                    show_exception(exc)
+                except Exception as exc:
+                    show_exception(exc)
