@@ -79,6 +79,36 @@ The dashboard provides a simple interface for:
 - running LNPR model training (`train.py`)
 - exporting to ONNX (`export_hailo.py`)
 - converting ONNX to HEF (`onnx_to_hef.py`)
+- training plate-text recognition (`train_recognizer.py`)
+- exporting recognizer checkpoints to ONNX (`export_recognizer_onnx.py`)
+- running end-to-end detector + recognizer inference (`infer_plate_text.py`)
+
+## Plate Text Recognition Tools
+
+The repository includes CRNN-based recognition scripts used by the dashboard:
+
+```bash
+# Train recognizer (expects train/images, val/images and labels.txt files)
+python scripts/train_recognizer.py \
+  --data data/recognition \
+  --epochs 30 \
+  --batch 32 \
+  --img-height 32 \
+  --img-width 160
+
+# Export recognizer checkpoint to ONNX
+python scripts/export_recognizer_onnx.py \
+  --weights runs/recognition/crnn_lp/weights/best.pt \
+  --img-height 32 \
+  --img-width 160 \
+  --opset 12
+
+# Run end-to-end inference (detect plate + recognize text)
+python scripts/infer_plate_text.py \
+  --image path/to/image.jpg \
+  --detector runs/detect/lnpr/weights/best.pt \
+  --recognizer runs/recognition/crnn_lp/weights/best.pt
+```
 
 ## Dataset Format
 
@@ -108,4 +138,7 @@ scripts/
   train.py
   export_hailo.py
   onnx_to_hef.py
+  train_recognizer.py
+  export_recognizer_onnx.py
+  infer_plate_text.py
 ```
