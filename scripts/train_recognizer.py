@@ -178,6 +178,22 @@ def candidate_label_files(root: Path, split: str) -> list[Path]:
     ]
 
 
+def ensure_split_layout(root: Path, split: str) -> tuple[Path, Path | None, bool]:
+    split_images_dir = root / split / "images"
+    split_images_dir.mkdir(parents=True, exist_ok=True)
+
+    labels_file = next((p for p in candidate_label_files(root, split) if p.exists()), None)
+    if labels_file is None:
+        template = root / "labels" / f"{split}.txt"
+        template.parent.mkdir(parents=True, exist_ok=True)
+        created_template = not template.exists()
+        if created_template:
+            template.write_text("# <image_path> <text>\n", encoding="utf-8")
+        return split_images_dir, template, created_template
+
+    return split_images_dir, labels_file, False
+
+
 def resolve_image_path(image_ref: str, labels_file: Path, split_images_dir: Path) -> Path:
     candidate = Path(image_ref)
     if candidate.is_absolute():
@@ -195,16 +211,20 @@ def resolve_image_path(image_ref: str, labels_file: Path, split_images_dir: Path
 
 
 def load_split_samples(root: Path, split: str, charset: set[str]) -> list[Sample]:
-    split_images_dir = root / split / "images"
-    labels_file = next((p for p in candidate_label_files(root, split) if p.exists()), None)
+    split_images_dir, labels_file, created_template = ensure_split_layout(root, split)
     if labels_file is None:
+        # Unreachable with ensure_split_layout, but kept for defensive clarity.
         raise FileNotFoundError(
             f"No labels file found for split '{split}'. Tried: "
             + ", ".join(str(p) for p in candidate_label_files(root, split))
         )
 
-    if not split_images_dir.exists():
-        raise FileNotFoundError(f"Missing images directory for split '{split}': {split_images_dir}")
+    if created_template:
+        raise FileNotFoundError(
+            f"No labels file found for split '{split}'. "
+            f"Created template: {labels_file}. "
+            f"Populate it and add images under: {split_images_dir}"
+        )
 
     samples: list[Sample] = []
     skipped_charset = 0
