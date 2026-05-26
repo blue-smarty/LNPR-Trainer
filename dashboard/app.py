@@ -729,6 +729,78 @@ with tab_recognition:
         "such as `train/labels.txt` or `labels/train.txt`."
     )
 
+    # ── Upload Dataset Files ──────────────────────────────────────────────────
+    with st.expander("📂 Upload dataset files", expanded=False):
+        st.markdown(
+            "Upload cropped plate images and/or a labels text file into the recognition "
+            "dataset directory structure. Images are saved to `{root}/{split}/images/` and "
+            "the labels file is saved to `{root}/labels/{split}.txt`."
+        )
+        upload_root = st.text_input(
+            "Dataset root", value="data/recognition", key="upload_rec_root"
+        )
+        upload_split = st.selectbox(
+            "Split", ["train", "val"], key="upload_rec_split"
+        )
+
+        upload_images = st.file_uploader(
+            "Image files (.jpg / .jpeg / .png)",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="upload_rec_images",
+        )
+        upload_labels = st.file_uploader(
+            "Labels text file (.txt)  —  one `<image_filename> <text>` entry per line",
+            type=["txt"],
+            accept_multiple_files=False,
+            key="upload_rec_labels",
+        )
+
+        images_dest = REPO_ROOT / upload_root / upload_split / "images"
+        labels_dest = REPO_ROOT / upload_root / "labels" / f"{upload_split}.txt"
+        st.caption(f"Images will be saved to: `{images_dest.relative_to(REPO_ROOT)}`")
+        st.caption(f"Labels file will be saved to: `{labels_dest.relative_to(REPO_ROOT)}`")
+
+        if st.button("Upload files", key="upload_rec_btn"):
+            if not upload_images and not upload_labels:
+                st.warning("No files selected. Please choose at least one image or a labels file.")
+            else:
+                upload_errors: list[str] = []
+                saved_images: list[str] = []
+
+                if upload_images:
+                    try:
+                        images_dest.mkdir(parents=True, exist_ok=True)
+                        for uf in upload_images:
+                            dest_file = images_dest / uf.name
+                            dest_file.write_bytes(uf.read())
+                            saved_images.append(uf.name)
+                    except Exception as exc:
+                        upload_errors.append(f"Failed to save images: {exc}")
+
+                if upload_labels is not None:
+                    try:
+                        labels_dest.parent.mkdir(parents=True, exist_ok=True)
+                        labels_dest.write_bytes(upload_labels.read())
+                    except Exception as exc:
+                        upload_errors.append(f"Failed to save labels file: {exc}")
+
+                if upload_errors:
+                    for err in upload_errors:
+                        st.error(err)
+                else:
+                    if saved_images:
+                        st.success(
+                            f"Saved {len(saved_images)} image(s) to "
+                            f"`{images_dest.relative_to(REPO_ROOT)}`"
+                        )
+                    if upload_labels is not None:
+                        st.success(
+                            f"Saved labels file to `{labels_dest.relative_to(REPO_ROOT)}`"
+                        )
+
+    st.divider()
+
     recognition_script_paths = {
         action: get_script_path(script_name)
         for action, script_name in RECOGNITION_ACTION_SCRIPTS.items()
