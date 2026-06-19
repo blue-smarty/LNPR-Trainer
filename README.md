@@ -40,6 +40,20 @@ python scripts/train.py --data data/lnpr_dataset/data.yaml --model yolov8n.pt \
   --epochs 100 --cfg configs/yolov8-lnpr.yaml
 ```
 
+#### Dataset input in the dashboard (Train Model tab)
+
+The **Train Model** tab supports three ways to supply your training dataset:
+
+| Option | How to use | Priority |
+|--------|-----------|---------|
+| **Upload dataset archive** | Click *Upload dataset archive (.zip)* and pick a ZIP that contains `images/`, `labels/`, and a `data.yaml` | Highest — overrides all other sources |
+| **Dataset path / URL** | Type a local path or an `http(s)://` URL in *Dataset path or URL (fallback)* | Used when no file is uploaded |
+| **Existing data.yaml** | Select a `data.yaml` already in the repository from the *Existing data.yaml (fallback)* dropdown | Used when neither of the above is provided |
+
+Accepted path/URL formats: a `data.yaml` file, a directory containing `data.yaml`, or a `.zip` archive structured the same as the upload option.
+
+If both an uploaded file and a path/URL are filled in, the uploaded file takes precedence and a warning is shown.
+
 ### 4) Export to ONNX (for Hailo toolchain)
 
 ```bash
