@@ -9,7 +9,6 @@ import sys
 import subprocess
 import json
 import tempfile
-import urllib.request
 import zipfile
 
 import streamlit as st
@@ -33,6 +32,10 @@ from dashboard.artifacts import (
     format_size,
     format_mtime,
     infer_onnx_path,
+)
+from dashboard.path_utils import (
+    resolve_dataset_path_or_url as _resolve_dataset_path_or_url,
+    resolve_local_path as _resolve_local_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -134,92 +137,6 @@ def _handle_uploaded_dataset(uploaded_file, tmp_dir: Path) -> Path:
     return yaml_files[0]
 
 
-def _resolve_dataset_path_or_url(path_or_url: str, tmp_dir: Path) -> Path:
-    """Resolve a local path or http(s) URL to a ``data.yaml`` path.
-
-    Supported inputs:
-
-    * http(s) URL to a ``.zip`` archive — downloaded and extracted.
-    * http(s) URL directly to a YAML file — downloaded as-is.
-    * Local ``.zip`` file — extracted; ``data.yaml`` located inside.
-    * Local directory — ``data.yaml`` is expected inside the directory.
-    * Local ``data.yaml`` file — returned as-is.
-
-    Raises ``FileNotFoundError`` when the path or extracted content contains no
-    ``data.yaml``.  Raises ``ValueError`` for unrecognised input.
-    """
-    p = path_or_url.strip()
-    is_url = p.startswith("http://") or p.startswith("https://")
-
-    if is_url:
-        url_lower = p.lower().split("?")[0]  # strip query params for suffix check
-        if url_lower.endswith(".zip"):
-            dl_path = tmp_dir / "dataset_url.zip"
-            urllib.request.urlretrieve(p, dl_path)  # noqa: S310
-            extract_dir = tmp_dir / "dataset_url"
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(dl_path, "r") as zf:
-                extract_root = extract_dir.resolve()
-                for member in zf.infolist():
-                    member_path = (extract_dir / member.filename).resolve()
-                    if not str(member_path).startswith(str(extract_root)):
-                        raise ValueError(
-                            f"Unsafe path in archive member: {member.filename}"
-                        )
-                zf.extractall(extract_dir)
-            yaml_files = sorted(extract_dir.rglob("data.yaml"))
-            if not yaml_files:
-                raise FileNotFoundError(
-                    f"No data.yaml found in the downloaded archive: {p}"
-                )
-            return yaml_files[0]
-        else:
-            # Treat as a direct link to a YAML/data.yaml file.
-            dl_path = tmp_dir / "data.yaml"
-            urllib.request.urlretrieve(p, dl_path)  # noqa: S310
-            return dl_path
-
-    # Local path
-    local = Path(p)
-    if not local.is_absolute():
-        local = (REPO_ROOT / p).resolve()
-
-    if not local.exists():
-        raise FileNotFoundError(f"Dataset path not found: {local}")
-
-    if local.is_file():
-        if local.suffix.lower() == ".zip":
-            extract_dir = tmp_dir / "dataset_local"
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(local, "r") as zf:
-                extract_root = extract_dir.resolve()
-                for member in zf.infolist():
-                    member_path = (extract_dir / member.filename).resolve()
-                    if not str(member_path).startswith(str(extract_root)):
-                        raise ValueError(
-                            f"Unsafe path in archive member: {member.filename}"
-                        )
-                zf.extractall(extract_dir)
-            yaml_files = sorted(extract_dir.rglob("data.yaml"))
-            if not yaml_files:
-                raise FileNotFoundError(
-                    f"No data.yaml found in the archive: {local}"
-                )
-            return yaml_files[0]
-        # Assume it is a data.yaml (or similar YAML config) file.
-        return local
-
-    if local.is_dir():
-        yaml_path = local / "data.yaml"
-        if not yaml_path.exists():
-            raise FileNotFoundError(
-                f"No data.yaml found in directory: {local}"
-            )
-        return yaml_path
-
-    raise ValueError(f"Path is neither a file nor a directory: {local}")
-
-
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -290,8 +207,12 @@ with tab_setup:
                 try:
                     from scripts.setup_dataset import setup_dataset
 
+                    # Resolve the root path against REPO_ROOT so that relative
+                    # paths are anchored to the repository root regardless of
+                    # the process working directory.
                     data_yaml_path = setup_dataset(
-                        root_path=dataset_root, classes_csv=classes
+                        root_path=str(_resolve_local_path(dataset_root, REPO_ROOT)),
+                        classes_csv=classes,
                     )
                     st.success("Dataset structure created successfully.")
                     st.markdown("**Generated file**")
@@ -461,8 +382,13 @@ with tab_train:
                     resolved_data_yaml = str(resolved_path)
                     effective_repo_root = None
                 else:
-                    resolved_data_yaml = data_yaml
-                    effective_repo_root = REPO_ROOT
+                    # Resolve the selected data.yaml path against REPO_ROOT so
+                    # the result is always absolute.  Using _resolve_local_path
+                    # prevents CWD-dependent resolution that can produce
+                    # duplicated path segments such as
+                    # ``…/dashboard/dashboard/data/lnpr_dataset/data.yaml``.
+                    resolved_data_yaml = str(_resolve_local_path(data_yaml, REPO_ROOT))
+                    effective_repo_root = None  # path is now absolute
 
                 result = validate_train_params(
                     data_yaml=resolved_data_yaml,
@@ -475,72 +401,83 @@ with tab_train:
                 )
                 if show_validation(result):
                     data_path = Path(resolved_data_yaml).resolve()
-                    progress_text = st.empty()
-                    progress_bar = st.progress(0, text="Preparing training…")
-                    try:
-                        from ultralytics import YOLO
+                    # Pre-train existence guard: emit a clear error if the
+                    # resolved absolute path does not exist so the user sees a
+                    # descriptive message instead of a cryptic Ultralytics
+                    # RuntimeError.
+                    if not data_path.exists():
+                        st.error(
+                            f"Dataset configuration file not found: `{data_path}`. "
+                            "Verify the dataset path is correct and the file exists "
+                            "before starting training."
+                        )
+                    else:
+                        progress_text = st.empty()
+                        progress_bar = st.progress(0, text="Preparing training…")
+                        try:
+                            from ultralytics import YOLO
 
-                        progress_state = {"last_epoch": 0, "target_epochs": int(epochs)}
+                            progress_state = {"last_epoch": 0, "target_epochs": int(epochs)}
 
-                        def on_train_start(trainer) -> None:
-                            total_epochs = int(getattr(trainer, "epochs", progress_state["target_epochs"]))
-                            progress_state["target_epochs"] = max(total_epochs, 1)
-                            progress_text.info(f"Training started: 0/{progress_state['target_epochs']} epochs")
-                            progress_bar.progress(0, text=f"Training 0/{progress_state['target_epochs']} epochs")
+                            def on_train_start(trainer) -> None:
+                                total_epochs = int(getattr(trainer, "epochs", progress_state["target_epochs"]))
+                                progress_state["target_epochs"] = max(total_epochs, 1)
+                                progress_text.info(f"Training started: 0/{progress_state['target_epochs']} epochs")
+                                progress_bar.progress(0, text=f"Training 0/{progress_state['target_epochs']} epochs")
 
-                        def on_train_epoch_end(trainer) -> None:
-                            current_epoch = int(getattr(trainer, "epoch", -1)) + 1
-                            total_epochs = int(getattr(trainer, "epochs", progress_state["target_epochs"]))
-                            total_epochs = max(total_epochs, 1)
-                            progress_state["last_epoch"] = current_epoch
-                            fraction = min(current_epoch / total_epochs, 1.0)
-                            progress_bar.progress(fraction, text=f"Training {current_epoch}/{total_epochs} epochs")
-                            progress_text.info(f"Training progress: {current_epoch}/{total_epochs} epochs")
+                            def on_train_epoch_end(trainer) -> None:
+                                current_epoch = int(getattr(trainer, "epoch", -1)) + 1
+                                total_epochs = int(getattr(trainer, "epochs", progress_state["target_epochs"]))
+                                total_epochs = max(total_epochs, 1)
+                                progress_state["last_epoch"] = current_epoch
+                                fraction = min(current_epoch / total_epochs, 1.0)
+                                progress_bar.progress(fraction, text=f"Training {current_epoch}/{total_epochs} epochs")
+                                progress_text.info(f"Training progress: {current_epoch}/{total_epochs} epochs")
 
-                        with st.spinner("Training in progress — this may take a while…"):
-                            model = YOLO(model_name)
-                            model.add_callback("on_train_start", on_train_start)
-                            model.add_callback("on_train_epoch_end", on_train_epoch_end)
+                            with st.spinner("Training in progress — this may take a while…"):
+                                model = YOLO(model_name)
+                                model.add_callback("on_train_start", on_train_start)
+                                model.add_callback("on_train_epoch_end", on_train_epoch_end)
 
-                            project_path = str(REPO_ROOT / project)
-                            train_kwargs = {
-                                "data": str(data_path),
-                                "epochs": int(epochs),
-                                "imgsz": int(imgsz),
-                                "batch": int(batch),
-                                "project": project_path,
-                                "name": run_name,
-                                "resume": resume,
-                            }
+                                project_path = str(REPO_ROOT / project)
+                                train_kwargs = {
+                                    "data": str(data_path),
+                                    "epochs": int(epochs),
+                                    "imgsz": int(imgsz),
+                                    "batch": int(batch),
+                                    "project": project_path,
+                                    "name": run_name,
+                                    "resume": resume,
+                                }
 
-                            if device.strip():
-                                train_kwargs["device"] = device.strip()
+                                if device.strip():
+                                    train_kwargs["device"] = device.strip()
 
-                            if cfg.strip():
-                                train_kwargs["cfg"] = cfg.strip()
+                                if cfg.strip():
+                                    train_kwargs["cfg"] = cfg.strip()
 
-                            model.train(**train_kwargs)
+                                model.train(**train_kwargs)
 
-                        progress_bar.progress(1.0, text=f"Training complete: {progress_state['target_epochs']}/{progress_state['target_epochs']} epochs")
-                        progress_text.success("Training completed successfully.")
+                            progress_bar.progress(1.0, text=f"Training complete: {progress_state['target_epochs']}/{progress_state['target_epochs']} epochs")
+                            progress_text.success("Training completed successfully.")
 
-                        run_dir = REPO_ROOT / project / run_name
-                        weights_dir = run_dir / "weights"
-                        st.markdown("**Training output**")
-                        st.code(str(run_dir), language="text")
+                            run_dir = REPO_ROOT / project / run_name
+                            weights_dir = run_dir / "weights"
+                            st.markdown("**Training output**")
+                            st.code(str(run_dir), language="text")
 
-                        if weights_dir.exists():
-                            found_weights = sorted(weights_dir.glob("*.pt"))
-                            if found_weights:
-                                st.markdown("**Weights found:**")
-                                for wt in found_weights:
-                                    st.markdown(f"- `{wt.relative_to(REPO_ROOT)}` ({format_size(wt)})")
-                        else:
-                            st.info("Weights directory not found yet; check the run directory above.")
-                    except Exception as exc:  # pragma: no cover - UI feedback path
-                        progress_bar.empty()
-                        progress_text.empty()
-                        show_exception(exc)
+                            if weights_dir.exists():
+                                found_weights = sorted(weights_dir.glob("*.pt"))
+                                if found_weights:
+                                    st.markdown("**Weights found:**")
+                                    for wt in found_weights:
+                                        st.markdown(f"- `{wt.relative_to(REPO_ROOT)}` ({format_size(wt)})")
+                            else:
+                                st.info("Weights directory not found yet; check the run directory above.")
+                        except Exception as exc:  # pragma: no cover - UI feedback path
+                            progress_bar.empty()
+                            progress_text.empty()
+                            show_exception(exc)
             except Exception as exc:  # dataset resolution / extraction errors
                 show_exception(exc)
             finally:
