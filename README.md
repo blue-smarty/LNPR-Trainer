@@ -1,4 +1,4 @@
-# LNPR-Trainer
+# LNPR-Trainer (NVIDIA GPU BASED)
 
 A repository for training and exporting **License Plate Number Recognition (LNPR)** object detection models using YOLOv8/PyTorch, targeting Raspberry Pi 5 and Hailo-8/8L edge deployment.
 
