@@ -51,6 +51,65 @@ def validate_setup_params(root_path: str, classes_csv: str) -> ValidationResult:
     return ValidationResult(errors=errors, warnings=warnings)
 
 
+def validate_dataset_source(
+    uploaded_file_name: str | None,
+    path_or_url: str,
+    data_yaml: str,
+    repo_root: Path | None = None,
+) -> ValidationResult:
+    """Validate dataset source inputs before resolving the final data.yaml path.
+
+    Priority: uploaded file > path/URL > existing data.yaml selectbox.
+    At least one source must be provided.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    has_upload = bool(uploaded_file_name)
+    has_path_url = bool(path_or_url and path_or_url.strip())
+    has_existing = bool(data_yaml and data_yaml.strip())
+
+    if not has_upload and not has_path_url and not has_existing:
+        errors.append(
+            "No dataset provided. Upload a .zip archive, enter a path/URL, "
+            "or select an existing data.yaml."
+        )
+        return ValidationResult(errors=errors, warnings=warnings)
+
+    if has_upload:
+        if not uploaded_file_name.lower().endswith(".zip"):
+            errors.append(
+                f"Uploaded dataset file must be a .zip archive; got: '{uploaded_file_name}'. "
+                "Pack your dataset (images/, labels/, data.yaml) into a ZIP file first."
+            )
+        if has_path_url:
+            warnings.append(
+                "Both a dataset file and a path/URL are provided. "
+                "The uploaded file takes priority; the path/URL will be ignored."
+            )
+        elif has_existing:
+            warnings.append(
+                "Both a dataset file and an existing data.yaml are selected. "
+                "The uploaded file takes priority; the existing data.yaml will be ignored."
+            )
+    elif has_path_url:
+        p = path_or_url.strip()
+        is_url = p.startswith("http://") or p.startswith("https://")
+        if not is_url:
+            path = Path(p)
+            if repo_root and not path.is_absolute():
+                path = (repo_root / p).resolve()
+            if not path.exists():
+                errors.append(f"Dataset path not found: {path}")
+        if has_existing:
+            warnings.append(
+                "Both a path/URL and an existing data.yaml are provided. "
+                "The path/URL takes priority; the existing data.yaml will be ignored."
+            )
+
+    return ValidationResult(errors=errors, warnings=warnings)
+
+
 def validate_train_params(
     data_yaml: str,
     model_name: str,
