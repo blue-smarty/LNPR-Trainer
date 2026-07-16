@@ -1,0 +1,23 @@
+# Base configuration for LNPR-Trainer
+
+seed: 42
+output_dir: runs/train
+device: cpu
+
+data:
+  train_path: data/train
+  val_path: data/val
+  text_column: text
+  label_column: label
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  early_stopping_patience: 5
+  checkpoint_dir: runs/checkpoints
+
+logging:
+  level: INFO
+  log_frequency: 10
