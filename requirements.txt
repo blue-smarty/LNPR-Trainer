@@ -1,6 +1,25 @@
+# Core dependencies for LNPR-Trainer
+# Pinned to the known-good versions validated in docs/compatibility_report.md
+# See also: docs/compatibility_report.md for architecture-specific notes
+
 ultralytics>=8.0.0
-opencv-python
-numpy
-pyyaml
-streamlit
+opencv-python>=4.8.0
+numpy>=1.24
+pyyaml>=6.0
+streamlit>=1.28.0
 paramiko>=3.5.1
+
+# torch and torchvision are required transitive dependencies of ultralytics.
+# Install the appropriate variant for your hardware:
+#   CPU-only:   pip install torch torchvision
+#   CUDA:       pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#   ARM64/Pi:   pip install torch torchvision  (PyTorch ships ARM64 wheels on PyPI)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Optional — required only for ONNX export validation
+# onnx>=1.14
+# onnxruntime>=1.16
+
+# Optional — Hailo SDK (proprietary, download from https://developer.hailo.ai)
+# hailo_sdk_client  # install manually from Hailo Developer Zone
